@@ -1,0 +1,148 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r}
+census_data <-
+  read_csv(here::here("2016-Census.csv"))
+head(census_data)
+```
+
+
+```{r}
+census_data <- 
+  labelled::to_factor(census_data)
+head(census_data)
+# First we can isolate the predictors used in the model
+census_data <- 
+  census_data %>%
+  select(`DIM: Age (13A)`,
+         `DIM: Sex (3)`,
+         `GEO_NAME`,
+         `ALT_GEO_CODE`,
+         `DIM: Highest certificate, diploma or degree (9)`
+  )
+```
+
+```{r}
+# Fix up the variables in census_data
+# First get rid of total age
+census_data <-
+  census_data %>% 
+  filter(census_data$`DIM: Age (13A)`
+         !="Total - Age") 
+
+census_data <-
+  census_data %>% 
+  filter(census_data$`DIM: Sex (3)`
+         !="Total - Sex") 
+
+census_data <-
+  census_data %>% 
+  filter(census_data$GEO_NAME
+         !="Canada") 
+
+census_data <-
+  census_data %>% 
+  filter(census_data$`DIM: Highest certificate, diploma or degree (9)`
+         !="Total - Highest certificate, diploma or degree")
+# Since we want to find results for each riding, get rid of geo_codes 
+census_data <-
+  census_data %>% 
+  filter(census_data$GEO_NAME != "Newfoundland and Labrador" &
+          census_data$GEO_NAME != "Prince Edward Island" &
+           census_data$GEO_NAME != "Alberta" &
+           census_data$GEO_NAME != "British Columbia" &
+           census_data$GEO_NAME != "Manitoba" &
+           census_data$GEO_NAME != "New Brunswick" &
+           census_data$GEO_NAME != "Nova Scotia" &
+           census_data$GEO_NAME != "Ontario" &
+           census_data$GEO_NAME != "Quebec" &
+           census_data$GEO_NAME != "Saskatchewan")
+
+census_data <-
+  census_data %>% 
+  filter(census_data$ALT_GEO_CODE != 60 &
+           census_data$ALT_GEO_CODE != 61 &
+           census_data$ALT_GEO_CODE != 62)
+```
+
+```{r}
+# We want to change tags for each column. First up is age
+# Finally we want to fix the values of education to match the survey data
+census_data <- 
+  census_data %>%
+    mutate(
+    `DIM: Highest certificate, diploma or degree (9)` = case_when(
+      `DIM: Highest certificate, diploma or degree (9)` == "No certificate, diploma or degree" ~ "High School or Lower",
+      `DIM: Highest certificate, diploma or degree (9)` == "Secondary (high) school diploma or equivalency certificate" ~ "High School or Lower",
+      `DIM: Highest certificate, diploma or degree (9)` == "Apprenticeship or trades certificate or diploma" ~ "Technical, college, CEGEP or other non-university certificate",
+      `DIM: Highest certificate, diploma or degree (9)` == "College, CEGEP or other non-university certificate or diploma" ~ "Technical, college, CEGEP or other non-university certificate",
+      `DIM: Highest certificate, diploma or degree (9)` == "University certificate or diploma below bachelor level" ~ "Technical, college, CEGEP or other non-university certificate",
+    `DIM: Highest certificate, diploma or degree (9)` == "University certificate, diploma or degree at bachelor level or above" ~ "University degree",
+    `DIM: Highest certificate, diploma or degree (9)` == "Bachelor's degree" ~ "University degree",
+    `DIM: Highest certificate, diploma or degree (9)` == "University certificate, diploma or degree above bachelor level" ~ "University degree",
+    )
+  )
+```
+
+```{r}
+# Fix up the age of the survey. First remove any big categories.
+census_data <-
+  census_data %>% 
+  filter(census_data$`DIM: Age (13A)` != "25 to 64 years" &
+          census_data$`DIM: Age (13A)` != "15 to 19 years")
+# Categorize them now
+census_data <-
+  census_data %>% 
+  mutate(
+    `DIM: Age (13A)` = case_when(
+      `DIM: Age (13A)` == "15 to 24 years" ~ "18 to 34",
+      `DIM: Age (13A)` == "20 to 24 years" ~ "18 to 34",
+      `DIM: Age (13A)` == "25 to 29 years" ~ "18 to 34",
+      `DIM: Age (13A)` == "25 to 34 years" ~ "18 to 34",
+      `DIM: Age (13A)` == "30 to 34 years" ~ "18 to 34",
+      `DIM: Age (13A)` == "35 to 44 years" ~ "35 to 54",
+      `DIM: Age (13A)` == "45 to 54 years" ~ "35 to 54",
+      `DIM: Age (13A)` == "55 to 64 years" ~ "55 to 64",
+      `DIM: Age (13A)` == "65 to 74 years" ~ "65+",
+      `DIM: Age (13A)` == "75 years and over" ~ "65+"
+    )
+  )
+```
+
+```{r}
+# Convert the GEO_CODES into provinces
+census_data <-
+  census_data %>% 
+  mutate(
+    cps19_province = case_when(
+      as.numeric(ALT_GEO_CODE) > 10000 & as.numeric(ALT_GEO_CODE) < 11000 ~ "Newfoundland and Labrador",
+      as.numeric(ALT_GEO_CODE) > 11000 & as.numeric(ALT_GEO_CODE) < 12000 ~ "Prince Edward Island",
+      as.numeric(ALT_GEO_CODE) > 12000 & as.numeric(ALT_GEO_CODE) < 13000 ~ "Nova Scotia",
+      as.numeric(ALT_GEO_CODE) > 13000 & as.numeric(ALT_GEO_CODE) < 14000 ~ "New Brunswick",
+      as.numeric(ALT_GEO_CODE) > 24000 & as.numeric(ALT_GEO_CODE) < 25000 ~ "Quebec",
+      as.numeric(ALT_GEO_CODE) > 35000 & as.numeric(ALT_GEO_CODE) < 36000 ~ "Ontario",
+      as.numeric(ALT_GEO_CODE) > 46000 & as.numeric(ALT_GEO_CODE) < 47000 ~ "Manitoba",
+      as.numeric(ALT_GEO_CODE) > 47000 & as.numeric(ALT_GEO_CODE) < 48000 ~ "Saskatchewan",
+      as.numeric(ALT_GEO_CODE) > 48000 & as.numeric(ALT_GEO_CODE) < 49000 ~ "Alberta",
+      as.numeric(ALT_GEO_CODE) > 59000 & as.numeric(ALT_GEO_CODE) < 60000 ~ "British Columbia",
+      as.numeric(ALT_GEO_CODE) == 60001 ~ "Yukon",
+      as.numeric(ALT_GEO_CODE) == 61001 ~ "Northwest Territories",
+      as.numeric(ALT_GEO_CODE) == 62001 ~ "Nunavut"
+    )
+  )
+```
+
+```{r}
+# Rename some of the variables
+census_data <- rename(census_data, cps19_age_group = `DIM: Age (13A)`)
+census_data <- rename(census_data, cps19_gender = `DIM: Sex (3)`)
+census_data <- rename(census_data, cps19_education = `DIM: Highest certificate, diploma or degree (9)`)
+```
+
+```{r}
+# Save it!
+write.csv(census_data, here::here("census_data.csv"), row.names = FALSE)
+
+```
