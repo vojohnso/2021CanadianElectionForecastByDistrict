@@ -1,0 +1,489 @@
+---
+title: "R Notebook"
+output: pdf_
+---
+```{r}
+rm(list = ls())
+```
+
+```{r}
+devtools::install_github("hodgettsp/cesR")
+devtools::install_github("mccormackandrew/mapcan")
+install.packages("labelled")
+install.packages("tidyverse")
+install.packages("haven")
+install.packages("here")
+install.packages("gtsummary")
+install.packages("nnet")
+install.packages("tidybayes")
+install.packages("lme4")
+install.packages("brms")
+install.packages("rstanarm")
+devtools::install_github("paleolimbot/electionca")
+
+```
+1) read in the poll;
+2) model the poll;
+3) read in the post-stratification data; and
+4) apply the model to the post-stratification data.
+```{r}
+library(cesR)
+library(dplyr)
+library(haven)
+library(labelled)
+library(tidyverse)
+library(here)
+library(gtsummary)
+library(nnet)
+library(mapcan)
+library(lme4)
+library(brms)
+library(tidybayes)
+library(rstanarm)
+```
+
+```{r}
+# Grab the datasets
+raw_web_data <- 
+  read_dta(here("2019 Canadian Election Study - Online Survey v1.0.dta"))
+```
+
+```{r}
+raw_web_data <- 
+  labelled::to_factor(raw_web_data)
+head(raw_web_data)
+```
+
+
+Signicant factors to look out for: province, age (cps19_age), gender, education, race, cps19_vote_2015, (cps_language_68/69 maybe (think French vs English))
+
+Others to consider, income, premier (this is just province lol), constituencynumber, 
+
+```{r}
+# To grab the necessary variables to build our model
+reduced_data <- 
+  raw_web_data %>%
+  select(
+    cps19_gender,
+    cps19_province,
+    cps19_age,
+    cps19_education,
+    cps19_votechoice,
+    cps19_v_likely,       # Willingness to vote in 2019 election
+    cps19_language_68,    # English
+    cps19_language_69,    # French
+    constituencynumber,
+    cps19_income_cat,     # income category (i.e 50 000 - 99 999)
+    cps19_income_number,   # income exact number 
+    cps19_citizenship
+  )
+```
+
+```{r}
+# We want to group some of the variables into one.
+reduced_data <-
+  reduced_data %>%
+  mutate(
+    cps19_age_group = case_when(
+      cps19_age >= 18 & cps19_age <= 34 ~ "18 to 34",
+      cps19_age >= 35 & cps19_age <= 54 ~ "35 to 54",
+      cps19_age >= 55 & cps19_age <= 64 ~ "55 to 64",
+      cps19_age >= 65 ~ "65+",
+    )
+  )
+# We also do not want to consider individuals who are not interested in voting
+# reduced_data <-
+#   reduced_data %>%
+#   filter(reduced_data$cps19_v_likely
+#                            !="Unlikely to vote" &
+#                              reduced_data$cps19_v_likely
+#                            !="Certain not to vote"&
+#                              reduced_data$cps19_v_likely
+#                            !="I am not eligible to vote")
+# 
+
+reduced_data <-
+  reduced_data %>%
+  filter(reduced_data$cps19_v_likely
+                           !="I am not eligible to vote")
+unique(reduced_data["cps19_citizenship"]) # We only want Canadian citizens as others can't vote.
+# Luckily the previous operation removed Permanant Residents and other similar types.
+
+# Now get rid of NA values in constituencynumber
+reduced_data <-
+  reduced_data %>% 
+  drop_na(constituencynumber)
+```
+
+```{r}
+# Fix up the labels for cps19_gender
+reduced_data <-
+  reduced_data %>%
+    mutate(
+    cps19_gender = case_when(
+      cps19_gender == "A woman" ~ "Female",
+      cps19_gender == "A man" ~ "Male",
+      cps19_gender == "Other (e.g. Trans, non-binary, two-spirit, gender-queer)" ~ "Other")
+  )
+```
+
+```{r}
+# We also would like to get rid of NA values for people who have not indicated who they wanted
+# to vote for. Also get rid of Don't know and Another Party (since other parties have no chance
+# of winning a seat)
+reduced_data <-
+  reduced_data %>%
+    filter(reduced_data$cps19_votechoice !="",
+           reduced_data$cps19_votechoice !="Don't know/ Prefer not to answer",
+           reduced_data$cps19_votechoice !="Another party (please specify)")
+
+
+```
+
+```{r}
+# Fix the education tags.
+reduced_data <- 
+  reduced_data %>% 
+  filter(reduced_data$cps19_education !="Don't know/ Prefer not to answer")
+
+reduced_data <-
+  reduced_data %>%
+  mutate(
+    cps19_education = case_when(
+      cps19_education == "No schooling" ~ "High School or Lower",
+      cps19_education == "Some elementary school" ~ "High School or Lower",
+      cps19_education == "Completed elementary school" ~ "High School or Lower",
+      cps19_education == "Some secondary/ high school" ~ "High School or Lower",
+      cps19_education == "Completed secondary/ high school" ~ "High School or Lower",
+      cps19_education == "Some university" ~ "High School or Lower",
+      cps19_education == "Some technical, community college, CEGEP, College Classique" ~ "Technical, college, CEGEP or other non-university certificate",
+      cps19_education == "Completed technical, community college, CEGEP, College Classique" ~ "Technical, college, CEGEP or other non-university certificate",
+      cps19_education == "Bachelor's degree" ~ "University degree", 
+      cps19_education == "Master's degree" ~ "University degree",
+      cps19_education == "Professional degree or doctorate" ~ "University degree",
+      TRUE ~ "What happened here?") 
+  )
+```
+
+```{r}
+# Rename the parties to be consistent
+reduced_data <-
+  reduced_data %>%
+  mutate(
+    cps19_votechoice = case_when(
+      cps19_votechoice == "Conservative Party" ~ "CPC",
+      cps19_votechoice == "Liberal Party" ~ "LPC",
+      cps19_votechoice == "Green Party" ~ "GPC",
+      cps19_votechoice == "ndp" ~ "NDP",
+      cps19_votechoice == "People's Party" ~ "PPC")
+  )
+# Note that there are now 1348 NA's, which correspond to Bloc (since this dataset
+# has the Bloc written with non UTF-8 characters which makes it hard to read)
+reduced_data$cps19_votechoice[is.na(reduced_data$cps19_votechoice)] <- "BQ"
+```
+
+```{r}
+# We can improve our model by applying 2015's election results for each riding.
+riding_results <- mapcan::federal_election_results %>% 
+  filter(election_year == "2015") %>% 
+  select(riding_code, 
+         party) %>% 
+  rename(constituencynumber = riding_code) 
+riding_results$constituencynumber = riding_results$constituencynumber
+
+riding_results <-
+  riding_results %>%
+    mutate(
+    party = case_when(
+      party == "Conservative" ~ "CPC",
+      party == "Liberal" ~ "LPC",
+      party == "Green" ~ "GPC",
+      party == "NDP" ~ "NDP",
+      party == "Bloc" ~ "BQ")
+  )
+```
+
+
+# End of Data Cleaning
+```{r}
+# Compile everything in here
+final_data <-
+  reduced_data %>%
+    select(
+    cps19_gender,
+    cps19_province,
+    cps19_age_group,
+    cps19_education,
+    cps19_votechoice,
+    cps19_v_likely,       # Willingness to vote in 2019 election
+    constituencynumber,
+  )
+```
+
+```{r}
+final_data <-
+  inner_join(final_data, riding_results, by=c("constituencynumber"))
+```
+
+```{r}
+# Alternative using 2019 election data instead
+riding_results2019 <-
+  read_csv(here::here("2019-election.csv"))
+
+riding_results2019 <-
+  riding_results2019 %>% 
+rename(constituencynumber = riding_code) %>% 
+  rename(party = forecast_winner)
+
+final_data <-
+  inner_join(final_data, riding_results2019, by=c("constituencynumber"))
+```
+
+
+```{r}
+# Let us plot a simple bar chart comparing voters for each corresponding party according
+# to the poll
+final_data%>%
+  ggplot(aes(y=cps19_votechoice, fill = cps19_votechoice))+
+  geom_bar(stat="count", width = 0.6)+
+  scale_x_continuous(name = "Vote count", 
+                     )+
+  ylab("Most Likely to Vote For")+
+  scale_fill_manual(values=c("CPC"= "cadetblue3","LPC"= "hotpink3",
+                             "GPC"= "navyblue", "NDP"= "gainsboro", 
+                             "BQ"= "gray20", "PPC" = "springgreen3"), 
+                    name = "Party")+
+  theme_minimal()
+```
+Now we can create our models.
+```{r}
+final_data %>% 
+  tbl_summary()
+```
+
+```{r}
+# We'll model with a logit (logistic) model
+ glm_model_LPC <-
+   glm(cps19_votechoice=="LPC" ~ cps19_gender + cps19_age_group + cps19_education + constituencynumber + party, data = final_data, family = binomial(link="logit"))
+
+glm_model_CPC <-
+  glm(cps19_votechoice=="CPC" ~ cps19_gender + cps19_age_group + cps19_education
+      + constituencynumber + party,
+     data = final_data, family = "binomial")
+
+glm_model_NDP <-
+  glm(cps19_votechoice=="NDP" ~ cps19_gender + cps19_age_group + cps19_education
+      + constituencynumber + party,
+     data = final_data, family = "binomial")
+
+glm_model_PPC <-
+  glm(cps19_votechoice=="PPC" ~ cps19_gender + cps19_age_group + cps19_education
+      + constituencynumber + party,
+     data = final_data, family = "binomial")
+
+glm_model_BQ <-
+  glm(cps19_votechoice=="BQ" ~ cps19_gender + cps19_age_group + cps19_education
+      + constituencynumber + party,
+     data = final_data, family = "binomial")
+
+glm_model_GPC <-
+  glm(cps19_votechoice=="GPC" ~ cps19_gender + cps19_age_group + cps19_education
+      + constituencynumber + party,
+     data = final_data, family = "binomial")
+
+# OTHER ALTERNATIVE DIFFERENT MODEL
+#  glm_model_LPC <-
+#    glm(cps19_votechoice=="LPC" ~ cps19_gender + cps19_age_group + cps19_education
+#        + party, data = final_data, family = "binomial")
+# 
+# glm_model_CPC <-
+#   glm(cps19_votechoice=="CPC" ~ cps19_gender + cps19_age_group + cps19_education
+#       +  party,
+#      data = final_data, family = "binomial")
+# 
+# glm_model_NDP <-
+#   glm(cps19_votechoice=="NDP" ~ cps19_gender + cps19_age_group + cps19_education
+#       + party,
+#      data = final_data, family = "binomial")
+# 
+# glm_model_PPC <-
+#   glm(cps19_votechoice=="PPC" ~ cps19_gender + cps19_age_group + cps19_education
+#       + party,
+#      data = final_data, family = "binomial")
+# 
+# glm_model_BQ <-
+#   glm(cps19_votechoice=="BQ" ~ cps19_gender + cps19_age_group + cps19_education
+#       + party,
+#      data = final_data, family = "binomial")
+# 
+# glm_model_GPC <-
+#   glm(cps19_votechoice=="GPC" ~ cps19_gender + cps19_age_group + cps19_education
+#       + party,
+#      data = final_data, family = "binomial")
+```
+
+
+```{r}
+# Load the models. This was from brm models but were weaker predictors than the glm ones.
+# LPC_model <- readRDS(here("output/brm_LPC.rds"))
+# CPC_model <- readRDS(here("output/brm_CPC.rds"))
+# NDP_model <- readRDS(here("output/brm_NDP.rds"))
+```
+
+
+```{r}
+# Since cps19_votechoice is an unordered categorical response variable, we should use
+# a multinomial logistic regression (another weaker model)
+# final_data$cps19_votechoice <- relevel(factor(final_data$cps19_votechoice), ref = "LPC")
+# multinomial_model <- multinom(cps19_votechoice ~ cps19_gender + cps19_age_group + 
+#                                  cps19_education + party,
+#                               data = final_data)
+```
+Now that we have our model, we should do some model diagonostics.
+
+ 
+
+Now that we pretended to do model diagonostics, let grab the post-stratification data. We will
+be using data from the 2016 Census.  
+
+```{r}
+census_data <-
+  read_csv(here::here("census_data.csv"))
+head(census_data)
+```
+
+# Let us apply post-stratification then.
+
+```{r}
+post_strat_census_data <- census_data
+
+post_strat_census_data <- 
+  post_strat_census_data %>% 
+  count(GEO_NAME, cps19_gender, cps19_education, cps19_age_group, cps19_province, ALT_GEO_CODE) %>%
+  group_by(GEO_NAME, cps19_gender, cps19_education, cps19_age_group, cps19_province, ALT_GEO_CODE)
+
+post_strat_census_data <-
+  post_strat_census_data %>%
+  group_by(GEO_NAME) %>%
+  mutate(prop = n/sum(n)) %>%
+  ungroup()
+
+```
+
+
+```{r}
+# Testing out the glm models instead (ALTERNATIVE)
+
+post_strat_census_data <- rename(post_strat_census_data, constituencynumber = ALT_GEO_CODE)
+
+# Add 2019 vote to data
+post_strat_census_data <-
+  inner_join(post_strat_census_data, riding_results2019, by=c("constituencynumber"))
+
+pred_model <- data.frame(predict(glm_model_LPC, newdata = post_strat_census_data, type = "response"))
+colnames(pred_model) = "LPC"
+post_strat_census_data <- cbind(post_strat_census_data, pred_model)
+
+pred_model <- data.frame(predict(glm_model_CPC, newdata = post_strat_census_data, type = "response"))
+colnames(pred_model) = "CPC"
+post_strat_census_data <- cbind(post_strat_census_data, pred_model)
+
+pred_model <- data.frame(predict(glm_model_NDP, newdata = post_strat_census_data, type = "response"))
+colnames(pred_model) = "NDP"
+post_strat_census_data <- cbind(post_strat_census_data, pred_model)
+
+pred_model <- data.frame(predict(glm_model_PPC, newdata = post_strat_census_data, type = "response"))
+colnames(pred_model) = "PPC"
+post_strat_census_data <- cbind(post_strat_census_data, pred_model)
+
+pred_model <- data.frame(predict(glm_model_BQ, newdata = post_strat_census_data, type = "response"))
+colnames(pred_model) = "BQ"
+post_strat_census_data <- cbind(post_strat_census_data, pred_model)
+
+pred_model <- data.frame(predict(glm_model_GPC, newdata = post_strat_census_data, type = "response"))
+colnames(pred_model) = "GPC"
+post_strat_census_data <- cbind(post_strat_census_data, pred_model)
+
+riding_data <-
+post_strat_census_data %>%
+  mutate(LPC = LPC*prop,
+         CPC = CPC*prop,
+         NDP = NDP*prop,
+         PPC = PPC*prop,
+         BQ = BQ*prop,
+         GPC = GPC*prop)  %>%
+  group_by(constituencynumber) %>%
+  summarise(LPC = sum(LPC),
+            CPC = sum(CPC),
+            NDP = sum(NDP),
+            PPC = sum(PPC),
+            BQ = sum(BQ),
+            GPC = sum(GPC))
+
+# ALTERNATIVE
+# riding_data <-
+# post_strat_census_data %>% 
+#   group_by(constituencynumber) %>%
+#   summarise(LPC = sum(LPC),
+#             CPC = sum(CPC),
+#             NDP = sum(NDP),
+#             PPC = sum(PPC),
+#             BQ = sum(BQ),
+#             GPC = sum(GPC))
+
+# Finally we take the max of the 6 parties to see the victor of each riding
+party_pred <- colnames(riding_data)[max.col(riding_data[,-1], "first") + 1]
+riding_data <- cbind(riding_data, party_pred)
+# Get rid of unnecessary columns
+riding_data <- riding_data[-c(2, 3, 4, 5, 6, 7)]
+
+```
+
+```{r}
+# Rename the headers
+riding_data <- rename(riding_data, riding_code = constituencynumber)
+riding_data <- rename(riding_data, forecast_winner = party_pred)
+```
+
+```{r}
+# We now have our results. Write to an excel file.
+write.csv(riding_data, here::here("forecast-summary.csv"), row.names = FALSE)
+```
+
+
+
+```{r}
+# Check the results against 2015 election.
+sum(riding_data$forecast_winner == riding_results2019$party)
+```
+```{r}
+fed_ridings <- mapcan(boundaries = ridings,
+       type = standard)
+colnames(riding_data)[colnames(riding_data) == "constituencynumber"] <- "riding_code"
+
+fed_ridings <- inner_join(fed_ridings, riding_data, by = "riding_code")
+colnames(fed_ridings)[colnames(fed_ridings) == "forecast_winner"] <- "party"
+
+fed_ridings <- 
+  fed_ridings %>% 
+  select(long, lat, party, group, riding_code)
+
+
+federal_map <- fed_ridings %>%
+  ggplot(aes(x = long, y = lat, group = group, fill = party)) +
+  geom_polygon() +
+  coord_fixed() +
+  theme_mapcan() +
+  ggtitle("2021 Federal Electoral Predictions")
+
+federal_map +
+  scale_fill_manual(name = "Winning party",
+                    values = c("steelblue", "blue", "green", "red", "orange")) 
+
+
+```
+
+
+
+
+
